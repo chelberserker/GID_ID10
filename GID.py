@@ -5,6 +5,7 @@ import copy
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
+from IPython.core.pylabtools import figsize
 from scipy.optimize import curve_fit
 from scipy.special import wofz
 import lmfit
@@ -221,8 +222,8 @@ class GID:
         # extent=[np.min(self.qxy),np.max(self.qxy),np.min(self.qz),np.max(self.qz)]
         # This implies x-axis is qxy, y-axis is qz.
 
-        im = ax0.imshow(np.log10(np.rot90(self.data_gap)), aspect='auto', vmin=_vmin, vmax=_vmax,
-                        extent=[np.min(self.qxy), np.max(self.qxy), np.min(self.qz), np.max(self.qz)], **kwargs)
+        im = ax0.imshow(np.log10(np.rot90(self.data_gap)), aspect='equal', vmin=_vmin, vmax=_vmax,
+                        extent=(np.min(self.qxy), np.max(self.qxy), np.min(self.qz), np.max(self.qz)), **kwargs)
 
         ax0.set_xlabel('$q_{xy}, \\AA^{-1}$')
         ax0.set_ylabel('$q_{z}, \\AA^{-1}$')
@@ -311,7 +312,7 @@ class GID:
             self._save_figure(plt.gcf(), f'qz_cut_{qxy_min}_{qxy_max}_A')
 
     def plot_quick_analysis(self, save=False):
-        fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(12, 6), layout='tight')
+        fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(6, 6), layout='tight')
 
         self.plot_2D_image(ax=ax[0])
 
@@ -438,10 +439,10 @@ class GID:
         print(f"Fitting {model} profile...")
         result = self.fit_profile(x, y, model=model, background=background, limits=limits, **kwargs)
 
-        print(result.fit_report())
+        #print(result.fit_report())
 
         # Plot
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(1,1,figsize=(6,6), layout='tight')
 
         ax.plot(x, y, 'o', label='Data', markersize=4, alpha=0.6)
 
@@ -451,25 +452,29 @@ class GID:
             ax.plot(x_fit, result.best_fit, 'r-', label='Fit', linewidth=2)
             ax.axvline(limits[0], color='k', linestyle='--', alpha=0.3)
             ax.axvline(limits[1], color='k', linestyle='--', alpha=0.3)
+            fit_line = np.array([x_fit, result.best_fit])
         else:
             ax.plot(x, result.best_fit, 'r-', label='Fit', linewidth=2)
+            fit_line = np.array([x, result.best_fit])
 
         ax.legend()
-        ax.set_xlabel('x')
+        ax.set_xlabel('q')
         ax.set_ylabel('Intensity')
         ax.set_title(f'{model.capitalize()} Fit Analysis')
 
         if save:
             self._ensure_sample_dir()
-            fname_base = f"{self.sample_name}/{filename_prefix}"
+            fname_base = f"{self.sample_name}/{filename_prefix}_{self.sample_name}"
 
             fig_name = f"{fname_base}.png"
-            fig.savefig(fig_name, dpi=200)
+            fig.savefig(fig_name, dpi=100)
             print(f"Graph saved to {fig_name}")
 
             txt_name = f"{fname_base}.txt"
             with open(txt_name, 'w') as f:
                 f.write(result.fit_report())
+                f.write('\n __________________________\n')
+                np.savetxt(f, fit_line.T)
             print(f"Fit parameters saved to {txt_name}")
 
         return result
@@ -492,6 +497,7 @@ class GID:
 
                 # Add metadata
                 hf.attrs['sample_name'] = self.sample_name
+                hf.attrs['pi'] = self.Pi
                 hf.attrs['scans'] = self.scans
                 hf.attrs['energy'] = self.energy
             print(f"2D image saved to {filename}")
