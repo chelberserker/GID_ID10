@@ -7,49 +7,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.optimize import curve_fit
 from scipy.special import wofz
-
-
-# --- Model Functions for Fitting ---
-
-def gaussian(x, amplitude, center, sigma):
-    """Gaussian lineshape."""
-    return amplitude * np.exp(-(x - center) ** 2 / (2 * sigma ** 2))
-
-
-def lorentzian(x, amplitude, center, sigma):
-    """Lorentzian lineshape. Sigma corresponds to HWHM."""
-    return amplitude * sigma ** 2 / ((x - center) ** 2 + sigma ** 2)
-
-
-def voigt(x, amplitude, center, sigma, gamma):
-    """
-    Voigt profile (convolution of Gaussian and Lorentzian).
-    sigma: Gaussian standard deviation
-    gamma: Lorentzian half-width at half-maximum (HWHM)
-    """
-    z = ((x - center) + 1j * gamma) / (sigma * np.sqrt(2))
-    return amplitude * wofz(z).real / (sigma * np.sqrt(2 * np.pi))
-
-
-def pseudo_voigt(x, amplitude, center, sigma, fraction):
-    """
-    Pseudo-Voigt profile (linear combination of Gaussian and Lorentzian).
-    sigma: HWHM (approximated for Gaussian part to match Lorentzian width definition if needed,
-           but here typically we treat it as a width parameter)
-    fraction: Lorentz fraction (0 to 1)
-    """
-    # Note: To consistently compare, sigma in both should represent similar width metric.
-    # Usually Pseudo-Voigt is defined with FWHM. Here we stick to a simple mixing.
-    return fraction * lorentzian(x, amplitude, center, sigma) + \
-        (1 - fraction) * gaussian(x, amplitude, center, sigma)
-
-
-def background_constant(x, c):
-    return c
-
-
-def background_linear(x, m, c):
-    return m * x + c
+import lmfit
+from lmfit.models import GaussianModel, LorentzianModel, VoigtModel, PseudoVoigtModel, LinearModel, ConstantModel
 
 
 # --- Main GID Class ---
@@ -387,21 +346,19 @@ class GID:
 
     # --- New Features ---
 
-    def fit_profile(self, x, y, model='gaussian', background='linear', limits=None, p0=None):
+    def fit_profile(self, x, y, model='gaussian', background='linear', limits=None, **kwargs):
         """
-        Fit a profile to the specified model with background.
+        Fit a profile to the specified model with background using lmfit.
 
         Parameters:
         - x, y: data arrays
         - model: 'gaussian', 'lorentzian', 'voigt', 'pseudo_voigt'
         - background: 'constant', 'linear', None
         - limits: tuple (min, max) to restrict fitting range
-        - p0: initial guess for parameters [amp, center, width, (gamma/fraction), (bg_params...)]
+        - kwargs: additional arguments for lmfit
 
         Returns:
-        - popt: optimal parameters
-        - pcov: covariance of parameters
-        - fit_func: the callable function used for fitting
+        - result: lmfit.model.ModelResult object
         """
 
         # Apply limits
@@ -413,77 +370,109 @@ class GID:
             x_fit = x
             y_fit = y
 
-        # Construct model function
-        def fit_func(x, *args):
-            # Unpack parameters based on model choice
-            # Basic params: amp, cen, wid
-            current_idx = 0
+        # Select model
+        if model == 'gaussian':
+            peak = GaussianModel(prefix='peak_')
+        elif model == 'lorentzian':
+            peak = LorentzianModel(prefix='peak_')
+        elif model == 'voigt':
+            peak = VoigtModel(prefix='peak_')
+        elif model == 'pseudo_voigt':
+            peak = PseudoVoigtModel(prefix='peak_')
+        else:
+            raise ValueError(f"Unknown model: {model}")
 
-            amp = args[current_idx];
-            current_idx += 1
-            cen = args[current_idx];
-            current_idx += 1
-            wid = args[current_idx];
-            current_idx += 1
+        # Select background
+        if background == 'linear':
+            bg = LinearModel(prefix='bg_')
+        elif background == 'constant':
+            bg = ConstantModel(prefix='bg_')
+        else:
+            bg = None
 
-            extra_param = None
-            if model in ['voigt', 'pseudo_voigt']:
-                extra_param = args[current_idx];
-                current_idx += 1
+        if bg:
+            mod = peak + bg
+        else:
+            mod = peak
 
-            # Calculate signal
-            if model == 'gaussian':
-                y_sig = gaussian(x, amp, cen, wid)
-            elif model == 'lorentzian':
-                y_sig = lorentzian(x, amp, cen, wid)
-            elif model == 'voigt':
-                y_sig = voigt(x, amp, cen, wid, extra_param)
-            elif model == 'pseudo_voigt':
-                y_sig = pseudo_voigt(x, amp, cen, wid, extra_param)
-            else:
-                raise ValueError(f"Unknown model: {model}")
+        params = mod.make_params()
 
-            # Calculate background
-            y_bg = 0
-            if background == 'constant':
-                c = args[current_idx]
-                y_bg = background_constant(x, c)
-            elif background == 'linear':
-                m = args[current_idx];
-                current_idx += 1
-                c = args[current_idx]
-                y_bg = background_linear(x, m, c)
+        # Initial guesses
+        if background == 'linear':
+            slope = (y_fit[-1] - y_fit[0]) / (x_fit[-1] - x_fit[0])
+            intercept = y_fit[0] - slope * x_fit[0]
+            params['bg_slope'].set(value=slope)
+            params['bg_intercept'].set(value=intercept)
+        elif background == 'constant':
+            params['bg_c'].set(value=np.min(y_fit))
 
-            return y_sig + y_bg
+        # Peak guess
+        # We use lmfit's guess but try to be smart about background
+        # If we have background, subtracting it before guessing might be better,
+        # but simpler is to let lmfit guess on raw data and hope it works or overwrite bg params.
+        # Actually peak.guess(y, x=x) often does a good job finding the peak even with background,
+        # but it resets all params in the model if called on the composite model?
+        # No, peak.guess returns a Parameters object.
 
-        # Initial guess generation if not provided
-        if p0 is None:
-            p0 = []
-            # Signal guess
-            amp_guess = np.max(y_fit) - np.min(y_fit)
-            cen_guess = x_fit[np.argmax(y_fit)]
-            wid_guess = (np.max(x_fit) - np.min(x_fit)) / 10.0  # Rough guess
-            p0.extend([amp_guess, cen_guess, wid_guess])
+        # Strategy: guess peak params using peak.guess, update params.
+        peak_params = peak.guess(y_fit, x=x_fit)
+        params.update(peak_params)
 
-            if model == 'voigt':
-                p0.append(wid_guess / 2.0)  # Gamma guess
-            elif model == 'pseudo_voigt':
-                p0.append(0.5)  # Fraction guess
+        result = mod.fit(y_fit, params, x=x_fit, **kwargs)
 
-            # Background guess
-            if background == 'constant':
-                p0.append(np.min(y_fit))
-            elif background == 'linear':
-                slope = (y_fit[-1] - y_fit[0]) / (x_fit[-1] - x_fit[0])
-                intercept = y_fit[0] - slope * x_fit[0]
-                p0.extend([slope, intercept])
+        return result
 
-        try:
-            popt, pcov = curve_fit(fit_func, x_fit, y_fit, p0=p0)
-            return popt, pcov, fit_func, x_fit, y_fit
-        except RuntimeError as e:
-            print(f"Fitting failed: {e}")
-            return None, None, None, x_fit, y_fit
+    def analyze_peak(self, x, y, model='voigt', background='linear', limits=None, save=False, filename_prefix='fit_result', **kwargs):
+        """
+        Wrapper for fit_profile to perform analysis, plotting, and saving.
+
+        Parameters:
+        - x, y: data arrays
+        - model: fitting model (default 'voigt')
+        - background: background model (default 'linear')
+        - limits: fitting limits
+        - save: whether to save plots and reports
+        - filename_prefix: prefix for saved files
+        - kwargs: extra arguments for fit_profile or lmfit
+        """
+        print(f"Fitting {model} profile...")
+        result = self.fit_profile(x, y, model=model, background=background, limits=limits, **kwargs)
+
+        print(result.fit_report())
+
+        # Plot
+        fig, ax = plt.subplots()
+
+        ax.plot(x, y, 'o', label='Data', markersize=4, alpha=0.6)
+
+        if limits:
+            mask = (x >= limits[0]) & (x <= limits[1])
+            x_fit = x[mask]
+            ax.plot(x_fit, result.best_fit, 'r-', label='Fit', linewidth=2)
+            ax.axvline(limits[0], color='k', linestyle='--', alpha=0.3)
+            ax.axvline(limits[1], color='k', linestyle='--', alpha=0.3)
+        else:
+            ax.plot(x, result.best_fit, 'r-', label='Fit', linewidth=2)
+
+        ax.legend()
+        ax.set_xlabel('x')
+        ax.set_ylabel('Intensity')
+        ax.set_title(f'{model.capitalize()} Fit Analysis')
+
+        if save:
+            self._ensure_sample_dir()
+            fname_base = f"{self.sample_name}/{filename_prefix}"
+
+            fig_name = f"{fname_base}.png"
+            fig.savefig(fig_name, dpi=200)
+            print(f"Graph saved to {fig_name}")
+
+            txt_name = f"{fname_base}.txt"
+            with open(txt_name, 'w') as f:
+                f.write(result.fit_report())
+            print(f"Fit parameters saved to {txt_name}")
+
+        return result
 
     def save_image_h5(self, filename=None):
         """
