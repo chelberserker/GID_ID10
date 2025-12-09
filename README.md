@@ -11,6 +11,7 @@ This is code for the processing of Surface X-ray Scattering data, obtained on th
 2) All necessary corrections, including: conversion to q, rebinning
 3) Calculation of reciprocal space maps, obtained during GID experiment
 4) Plotting and saving graphs and data
+5) Quick peak fitting for on-the fly analysis of GID data
 
 ## Dependencies
 
