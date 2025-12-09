@@ -5,12 +5,8 @@ import copy
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from IPython.core.pylabtools import figsize
-from scipy.optimize import curve_fit
-from scipy.special import wofz
 import lmfit
 from lmfit.models import GaussianModel, LorentzianModel, VoigtModel, PseudoVoigtModel, LinearModel, ConstantModel
-
 
 # --- Main GID Class ---
 
@@ -18,7 +14,7 @@ class GID:
     def __init__(self, file, scans, alpha_i_name='chi', detector_name='mythen2', monitor_name='mon',
                  transmission_name='autof_eh1_transm', att_name='autof_eh1_curratt', cnttime_name='sec',
                  PX0=50, mythen_gap=120, PPD=198.5, pixel_size_qxz=0.055, angle_name='delta', energy_name='monoe',
-                 I0=1e12, *args, **kwargs):
+                 I0=1e12, saving_dir= None, *args, **kwargs):
         self.file = file
         self.scans = np.array(scans)
         self.alpha_i_name = alpha_i_name
@@ -36,7 +32,7 @@ class GID:
         self.I0 = I0
 
         # Initialize attributes to store data
-        self.data = np.empty((0, 0))  # Placeholder
+        self.data = np.empty((0, 0))  # Placeholder for the data
         self.angle = np.array([])
         self.alpha_i = np.array([])
         self.monitor = np.array([])
@@ -46,14 +42,15 @@ class GID:
         self.energy = 0.0
         self.sample_name = ""
         self.Pi = ''
+        self.saving_dir = saving_dir
+
+
 
         # Processed data containers
         self.data_gap = None
         self.data_gap_e = None
         self.qz = None
         self.qxy = None
-        self.Qz_map = None
-        self.Qx_map = None
 
         self.__load_data__()
         self.__process_2D_data__()
@@ -140,18 +137,18 @@ class GID:
                         print(f'Loaded scan #{ScanN}')
                     except Exception as e:
                         print(f"Error appending scan {ScanN}: {e}")
-
+        self._check_saving_dir()
         print("Loading completed. Reading time %3.3f sec" % (time.time() - t0))
 
     def get_qz(self, pixels):
         # Calculate qz. Assuming alpha_i is scalar or matches dimensions if it varies.
-        # Here we treat alpha_i as a scalar (mean value) if it's an array to produce a 1D qz array for pixels.
-        alpha_i = np.mean(self.alpha_i) if np.size(self.alpha_i) > 1 else self.alpha_i
+        # Here we treat alpha_i as a scalar (first value) if it's an array to produce a 1D qz array for pixels.
+        alpha_i = self.alpha_i[0] if np.size(self.alpha_i) > 1 else self.alpha_i
 
-        wavelength = 12.398 / self.energy
+        wavelength = 12.398 / self.energy   # in Angstroms
         k0 = 2 * np.pi / wavelength
 
-        # pixels can be an array
+        # pixels are an array
         qz = k0 * (np.sin(np.deg2rad(alpha_i)) + np.sin(np.deg2rad((pixels - self.PX0) / self.PPD)))
         return qz
 
@@ -166,13 +163,11 @@ class GID:
         print("Start processing 2D data.")
         nx, ny = np.shape(self.data)
 
-        # Handle gaps in detector modules (Mythen detector specific)
-        # Assuming data is split into two halves with a gap
+        # Handle gaps in detector modules (Mythen is built from 2 modules)
         map2Dm = np.ones((nx, ny + self.mythen_gap))
 
-        # Specific slicing for Mythen detector (1280 pixels per module?)
+        # Specific slicing for Mythen detector (1280 pixels per module)
         # Original code had hardcoded indices: 0:1279 and 1280:2559
-        # 1280 is module size.
         if ny >= 2559:
             map2Dm[:, 0:1279] = self.data[:, 0:1279]
             map2Dm[:, (1280 + self.mythen_gap):(2559 + self.mythen_gap)] = self.data[:, 1280:2559]
@@ -205,7 +200,7 @@ class GID:
         else:
             ax0 = ax
 
-        # Determine limits for better contrast
+        # Determine colormap limits for better contrast
         mean_val = np.mean(self.data_gap)
         std_val = np.std(self.data_gap)
         _vmin = np.log10(max(mean_val - std_val, 1e-12))  # Avoid log of negative/zero
@@ -218,9 +213,6 @@ class GID:
         # Original: rows=angles(x), cols=pixels(z).
         # Rotated: rows=pixels(z), cols=angles(x) (reversed).
 
-        # Let's check extent logic from original code:
-        # extent=[np.min(self.qxy),np.max(self.qxy),np.min(self.qz),np.max(self.qz)]
-        # This implies x-axis is qxy, y-axis is qz.
 
         im = ax0.imshow(np.log10(np.rot90(self.data_gap)), aspect='equal', vmin=_vmin, vmax=_vmax,
                         extent=(np.min(self.qxy), np.max(self.qxy), np.min(self.qz), np.max(self.qz)), **kwargs)
@@ -250,8 +242,8 @@ class GID:
 
         self._ensure_sample_dir()
 
-        filename = './{}/GID_{}_scan_{}_qxy_cut_{}_{}_A.dat'.format(
-            self.sample_name, self.sample_name, self.scans, qz_min, qz_max)
+        filename = self.saving_dir + '/GID_{}_scan_{}_qxy_cut_{}_{}_A.dat'.format(
+            self.sample_name, self.scans, qz_min, qz_max)
 
         np.savetxt(filename, out.T)
         print('GID cut saved as: {}'.format(filename))
@@ -288,8 +280,8 @@ class GID:
 
         self._ensure_sample_dir()
 
-        filename = './{}/GID_{}_scan_{}_qz_cut_{}_{}_A.dat'.format(
-            self.sample_name, self.sample_name, self.scans, qxy_min, qxy_max)
+        filename = self.saving_dir + '/GID_{}_scan_{}_qz_cut_{}_{}_A.dat'.format(
+            self.sample_name, self.scans, qxy_min, qxy_max)
 
         np.savetxt(filename, out.T)
         print('GID cut saved as: {}'.format(filename))
@@ -333,16 +325,23 @@ class GID:
             print('Saving standard GID plot.')
             self._save_figure(fig, 'quick_analysis')
 
+    def _check_saving_dir(self):
+        if self.saving_dir:
+            pass
+        else:
+            self.saving_dir = os.getcwd() + f"/{self.sample_name}"
+
+
     def _ensure_sample_dir(self):
         try:
-            os.mkdir(self.sample_name)
-        except OSError:
-            pass  # Directory likely exists
+            os.makedirs(self.saving_dir, exist_ok=True)
+        except OSError as e:
+            print('Saving directory is impossible: ', e)
 
     def _save_figure(self, fig, suffix):
         self._ensure_sample_dir()
-        filename = './{}/GID_{}_scan_{}_{}.png'.format(
-            self.sample_name, self.sample_name, self.scans, suffix)
+        filename = self.saving_dir + '/GID_{}_scan_{}_{}.png'.format(
+            self.sample_name, self.scans, suffix)
         fig.savefig(filename, dpi=200)
 
     # --- New Features ---
@@ -464,7 +463,7 @@ class GID:
 
         if save:
             self._ensure_sample_dir()
-            fname_base = f"{self.sample_name}/{filename_prefix}_{self.sample_name}"
+            fname_base = f"{self.saving_dir}/{filename_prefix}_{self.sample_name}"
 
             fig_name = f"{fname_base}.png"
             fig.savefig(fig_name, dpi=100)
@@ -486,8 +485,8 @@ class GID:
         """
         if filename is None:
             self._ensure_sample_dir()
-            filename = './{}/GID_{}_scan_{}_2D.h5'.format(
-                self.sample_name, self.sample_name, self.scans)
+            filename = self.saving_dir +'/GID_{}_scan_{}_2D.h5'.format(
+                self.sample_name, self.scans)
 
         try:
             with h5py.File(filename, 'w') as hf:
