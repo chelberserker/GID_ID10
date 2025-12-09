@@ -11,10 +11,70 @@ from lmfit.models import GaussianModel, LorentzianModel, VoigtModel, PseudoVoigt
 # --- Main GID Class ---
 
 class GID:
+    """
+    Main class for processing GID (Grazing Incidence Diffraction) data.
+
+    This class handles loading data from HDF5 files, processing it (normalization,
+    conversion to reciprocal space), and visualizing/saving the results.
+
+    Attributes:
+        file (str): Path to the HDF5 data file.
+        scans (np.ndarray): Array of scan numbers to be processed.
+        alpha_i_name (str): Name of the incident angle motor/counter.
+        detector_name (str): Name of the detector dataset.
+        monitor_name (str): Name of the monitor counter.
+        transmission_name (str): Name of the transmission counter.
+        att_name (str): Name of the attenuator counter.
+        cnttime_name (str): Name of the counting time counter.
+        angle_name (str): Name of the angle motor (e.g., 'delta').
+        energy_name (str): Name of the energy motor.
+        PX0 (float): Pixel index of the direct beam (or reference pixel).
+        mythen_gap (int): Gap size in pixels between detector modules.
+        PPD (float): Pixels per degree calibration factor.
+        I0 (float): Incident intensity normalization factor.
+        saving_dir (str): Directory where output files will be saved.
+        data (np.ndarray): Raw detector data.
+        angle (np.ndarray): Array of angles corresponding to the data.
+        alpha_i (np.ndarray): Incident angle values.
+        monitor (np.ndarray): Monitor counts.
+        transmission (np.ndarray): Transmission values.
+        attenuator (np.ndarray): Attenuator values.
+        cnttime (np.ndarray): Counting times.
+        energy (float): Beam energy in keV.
+        sample_name (str): Name of the sample extracted from metadata.
+        Pi (int or str): Surface pressure (Pi) value if available.
+        data_gap (np.ndarray): Processed 2D data map with gap handling.
+        qz (np.ndarray): Array of qz values.
+        qxy (np.ndarray): Array of qxy values.
+    """
+
     def __init__(self, file, scans, alpha_i_name='chi', detector_name='mythen2', monitor_name='mon',
                  transmission_name='autof_eh1_transm', att_name='autof_eh1_curratt', cnttime_name='sec',
                  PX0=50, mythen_gap=120, PPD=198.5, pixel_size_qxz=0.055, angle_name='delta', energy_name='monoe',
                  I0=1e12, saving_dir= None, *args, **kwargs):
+        """
+        Initialize the GID processor.
+
+        Args:
+            file (str): Path to the HDF5 file.
+            scans (list or int): List of scan numbers or a single scan number.
+            alpha_i_name (str, optional): Name of incident angle dataset. Defaults to 'chi'.
+            detector_name (str, optional): Name of detector dataset. Defaults to 'mythen2'.
+            monitor_name (str, optional): Name of monitor dataset. Defaults to 'mon'.
+            transmission_name (str, optional): Name of transmission dataset. Defaults to 'autof_eh1_transm'.
+            att_name (str, optional): Name of attenuator dataset. Defaults to 'autof_eh1_curratt'.
+            cnttime_name (str, optional): Name of count time dataset. Defaults to 'sec'.
+            PX0 (float, optional): Direct beam pixel position. Defaults to 50.
+            mythen_gap (int, optional): Number of pixels in the detector gap. Defaults to 120.
+            PPD (float, optional): Pixels per degree. Defaults to 198.5.
+            pixel_size_qxz (float, optional): Pixel size in reciprocal space (unused in init). Defaults to 0.055.
+            angle_name (str, optional): Name of the angle motor. Defaults to 'delta'.
+            energy_name (str, optional): Name of the energy motor. Defaults to 'monoe'.
+            I0 (float, optional): Normalization intensity. Defaults to 1e12.
+            saving_dir (str, optional): Directory to save outputs. Defaults to None (creates based on sample name).
+            *args: Variable length argument list.
+            **kwargs: Arbitrary keyword arguments.
+        """
         self.file = file
         self.scans = np.array(scans)
         self.alpha_i_name = alpha_i_name
@@ -56,6 +116,15 @@ class GID:
         self.__process_2D_data__()
 
     def __load_single_scan__(self, ScanN):
+        """
+        Load data for a single scan from the HDF5 file.
+
+        Args:
+            ScanN (str): The scan number as a string.
+
+        Raises:
+            Exception: If there is an error reading the file or dataset.
+        """
         print('Loading scan #{}'.format(ScanN))
         try:
             with h5py.File(self.file, "r") as f:
@@ -91,6 +160,15 @@ class GID:
         print('Loaded scan #{}'.format(ScanN))
 
     def __load_data__(self, skip_points=1):
+        """
+        Load data from all specified scans.
+
+        If multiple scans are provided, they are concatenated.
+
+        Args:
+            skip_points (int, optional): Number of initial points to skip in each scan
+                (often used to skip the start of a scan where motors are accelerating). Defaults to 1.
+        """
         t0 = time.time()
         print("Start loading data.")
 
@@ -141,6 +219,15 @@ class GID:
         print("Loading completed. Reading time %3.3f sec" % (time.time() - t0))
 
     def get_qz(self, pixels):
+        """
+        Calculate the vertical scattering vector qz.
+
+        Args:
+            pixels (np.ndarray): Array of pixel indices (vertical position on detector).
+
+        Returns:
+            np.ndarray: Array of qz values in inverse Angstroms.
+        """
         # Calculate qz. Assuming alpha_i is scalar or matches dimensions if it varies.
         # Here we treat alpha_i as a scalar (first value) if it's an array to produce a 1D qz array for pixels.
         alpha_i = self.alpha_i[0] if np.size(self.alpha_i) > 1 else self.alpha_i
@@ -153,12 +240,29 @@ class GID:
         return qz
 
     def get_qxy(self, angle):
+        """
+        Calculate the horizontal scattering vector qxy.
+
+        Args:
+            angle (float or np.ndarray): In-plane scattering angle(s) in degrees.
+
+        Returns:
+            float or np.ndarray: qxy value(s) in inverse Angstroms.
+        """
         wavelength = 12.398 / self.energy
         k0 = 2 * np.pi / wavelength
         qxy = 2 * k0 * np.sin(np.deg2rad(angle / 2))
         return qxy
 
     def __process_2D_data__(self):
+        """
+        Process the raw 2D detector data.
+
+        This involves:
+        1. Handling the physical gap in the detector modules.
+        2. Normalizing data by monitor and transmission.
+        3. Calculating qz and qxy axes.
+        """
         t0 = time.time()
         print("Start processing 2D data.")
         nx, ny = np.shape(self.data)
@@ -195,6 +299,17 @@ class GID:
         print("Processing completed. Processing time %3.3f sec \n\n" % (time.time() - t0))
 
     def plot_2D_image(self, ax=None, save=False, **kwargs):
+        """
+        Plot the 2D GID map in reciprocal space (qxy vs qz).
+
+        Args:
+            ax (matplotlib.axes.Axes, optional): Axes to plot on. If None, a new figure is created.
+            save (bool, optional): Whether to save the figure to disk. Defaults to False.
+            **kwargs: Additional arguments passed to `imshow`.
+
+        Returns:
+            matplotlib.axes.Axes: The axes containing the plot.
+        """
         if ax is None:
             fig, ax0 = plt.subplots(nrows=1, ncols=1, figsize=(6, 6), layout='tight')
         else:
@@ -227,6 +342,17 @@ class GID:
         return ax0
 
     def get_qxy_cut(self, qz_min, qz_max):
+        """
+        Extract a 1D cut along qxy by integrating over a range of qz.
+
+        Args:
+            qz_min (float): Minimum qz value.
+            qz_max (float): Maximum qz value.
+
+        Returns:
+            list: A list containing [qxy, intensity_profile].
+                  intensity_profile is sum of counts in the qz range.
+        """
         # Find indices for qz range
         qz_indices = np.where((self.qz > qz_min) & (self.qz < qz_max))[0]
         if len(qz_indices) == 0:
@@ -237,6 +363,14 @@ class GID:
         return [self.qxy, cut_qxy]
 
     def save_qxy_cut(self, qz_min, qz_max, **kwargs):
+        """
+        Save the qxy cut data to a text file.
+
+        Args:
+            qz_min (float): Minimum qz value.
+            qz_max (float): Maximum qz value.
+            **kwargs: Additional keyword arguments.
+        """
         qxy, cut_qxy = self.get_qxy_cut(qz_min, qz_max)
         out = np.array([qxy, cut_qxy])
 
@@ -249,6 +383,16 @@ class GID:
         print('GID cut saved as: {}'.format(filename))
 
     def plot_qxy_cut(self, qz_min, qz_max, ax=None, save=False, **kwargs):
+        """
+        Plot the qxy cut.
+
+        Args:
+            qz_min (float): Minimum qz value.
+            qz_max (float): Maximum qz value.
+            ax (matplotlib.axes.Axes, optional): Axes to plot on.
+            save (bool, optional): Whether to save the figure. Defaults to False.
+            **kwargs: Additional arguments.
+        """
         if ax is None:
             fig, ax0 = plt.subplots(nrows=1, ncols=1, figsize=(6, 6), layout='tight')
         else:
@@ -266,6 +410,16 @@ class GID:
             self._save_figure(plt.gcf(), f'qxy_cut_{qz_min}_{qz_max}_A')
 
     def get_qz_cut(self, qxy_min, qxy_max):
+        """
+        Extract a 1D cut along qz by integrating over a range of qxy.
+
+        Args:
+            qxy_min (float): Minimum qxy value.
+            qxy_max (float): Maximum qxy value.
+
+        Returns:
+            list: A list containing [qz, intensity_profile].
+        """
         qxy_indices = np.where((self.qxy > qxy_min) & (self.qxy < qxy_max))[0]
         if len(qxy_indices) == 0:
             print(f"Warning: No data in qxy range [{qxy_min}, {qxy_max}]")
@@ -275,6 +429,14 @@ class GID:
         return [self.qz, cut_qz]
 
     def save_qz_cut(self, qxy_min, qxy_max, **kwargs):
+        """
+        Save the qz cut data to a text file.
+
+        Args:
+            qxy_min (float): Minimum qxy value.
+            qxy_max (float): Maximum qxy value.
+            **kwargs: Additional keyword arguments.
+        """
         qz, cut_qz = self.get_qz_cut(qxy_min, qxy_max)
         out = np.array([qz, cut_qz])
 
@@ -287,6 +449,16 @@ class GID:
         print('GID cut saved as: {}'.format(filename))
 
     def plot_qz_cut(self, qxy_min, qxy_max, ax=None, save=False, **kwargs):
+        """
+        Plot the qz cut.
+
+        Args:
+            qxy_min (float): Minimum qxy value.
+            qxy_max (float): Maximum qxy value.
+            ax (matplotlib.axes.Axes, optional): Axes to plot on.
+            save (bool, optional): Whether to save the figure. Defaults to False.
+            **kwargs: Additional arguments.
+        """
         if ax is None:
             fig, ax0 = plt.subplots(nrows=1, ncols=1, figsize=(6, 6), layout='tight')
         else:
@@ -304,6 +476,12 @@ class GID:
             self._save_figure(plt.gcf(), f'qz_cut_{qxy_min}_{qxy_max}_A')
 
     def plot_quick_analysis(self, save=False):
+        """
+        Perform a quick standard analysis plot including the 2D map and representative qxy cuts.
+
+        Args:
+            save (bool, optional): Whether to save the figure. Defaults to False.
+        """
         fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(6, 6), layout='tight')
 
         self.plot_2D_image(ax=ax[0])
@@ -326,6 +504,9 @@ class GID:
             self._save_figure(fig, 'quick_analysis')
 
     def _check_saving_dir(self):
+        """
+        Check if the saving directory is set; if not, set a default based on the current working directory and sample name.
+        """
         if self.saving_dir:
             pass
         else:
@@ -333,12 +514,22 @@ class GID:
 
 
     def _ensure_sample_dir(self):
+        """
+        Ensure the saving directory exists, creating it if necessary.
+        """
         try:
             os.makedirs(self.saving_dir, exist_ok=True)
         except OSError as e:
             print('Saving directory is impossible: ', e)
 
     def _save_figure(self, fig, suffix):
+        """
+        Helper method to save a matplotlib figure.
+
+        Args:
+            fig (matplotlib.figure.Figure): The figure object to save.
+            suffix (str): Suffix to append to the filename.
+        """
         self._ensure_sample_dir()
         filename = self.saving_dir + '/GID_{}_scan_{}_{}.png'.format(
             self.sample_name, self.scans, suffix)
@@ -350,15 +541,22 @@ class GID:
         """
         Fit a profile to the specified model with background using lmfit.
 
-        Parameters:
-        - x, y: data arrays
-        - model: 'gaussian', 'lorentzian', 'voigt', 'pseudo_voigt'
-        - background: 'constant', 'linear', None
-        - limits: tuple (min, max) to restrict fitting range
-        - kwargs: additional arguments for lmfit
+        Args:
+            x (np.ndarray): The independent variable array (e.g., q).
+            y (np.ndarray): The dependent variable array (e.g., Intensity).
+            model (str, optional): The peak model to use. Options are 'gaussian',
+                'lorentzian', 'voigt', 'pseudo_voigt'. Defaults to 'gaussian'.
+            background (str, optional): The background model. Options are 'linear',
+                'constant', or None. Defaults to 'linear'.
+            limits (tuple, optional): A tuple (min, max) to restrict the fitting range.
+                Defaults to None (use full range).
+            **kwargs: Additional keyword arguments passed to `mod.fit`.
 
         Returns:
-        - result: lmfit.model.ModelResult object
+            lmfit.model.ModelResult: The result of the fit.
+
+        Raises:
+            ValueError: If an unknown model is specified.
         """
 
         # Apply limits
@@ -426,14 +624,18 @@ class GID:
         """
         Wrapper for fit_profile to perform analysis, plotting, and saving.
 
-        Parameters:
-        - x, y: data arrays
-        - model: fitting model (default 'voigt')
-        - background: background model (default 'linear')
-        - limits: fitting limits
-        - save: whether to save plots and reports
-        - filename_prefix: prefix for saved files
-        - kwargs: extra arguments for fit_profile or lmfit
+        Args:
+            x (np.ndarray): The independent variable array.
+            y (np.ndarray): The dependent variable array.
+            model (str, optional): Fitting model. Defaults to 'voigt'.
+            background (str, optional): Background model. Defaults to 'linear'.
+            limits (tuple, optional): Fitting limits (min, max). Defaults to None.
+            save (bool, optional): Whether to save plots and reports. Defaults to False.
+            filename_prefix (str, optional): Prefix for saved files. Defaults to 'fit_result'.
+            **kwargs: Extra arguments for fit_profile or lmfit.
+
+        Returns:
+            lmfit.model.ModelResult: The result object from `fit_profile`.
         """
         print(f"Fitting {model} profile...")
         result = self.fit_profile(x, y, model=model, background=background, limits=limits, **kwargs)
@@ -481,7 +683,11 @@ class GID:
     def save_image_h5(self, filename=None):
         """
         Save the 2D image data to an HDF5 file in q-coordinates.
-        Saves: Intensity map, Qxy axis, Qz axis.
+
+        This saves the intensity map, qxy axis, and qz axis, along with metadata.
+
+        Args:
+            filename (str, optional): The name of the file to save. If None, it is auto-generated.
         """
         if filename is None:
             self._ensure_sample_dir()
