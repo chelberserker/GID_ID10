@@ -46,5 +46,5 @@ napoleon_attr_annotations = True
 # -- Options for HTML output -------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
-html_theme = 'alabaster' # Fallback theme, widely available
+html_theme = 'sphinx_rtd_theme' # Fallback theme, widely available
 html_static_path = ['_static']
