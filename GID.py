@@ -101,7 +101,7 @@ class GID:
         self.cnttime = np.array([])
         self.energy = 0.0
         self.sample_name = ""
-        self.Pi = ''
+        self.Pi = 100
         self.saving_dir = saving_dir
 
 
@@ -114,13 +114,14 @@ class GID:
 
         self.__load_data__()
         self.__process_2D_data__()
+        self._check_saving_dir()
 
     def __load_single_scan__(self, ScanN):
         """
         Load data for a single scan from the HDF5 file.
 
         Args:
-            ScanN (str): The scan number as a string.
+            ScanN (str): The scan numbers are a list of scans.
 
         Raises:
             Exception: If there is an error reading the file or dataset.
@@ -215,7 +216,7 @@ class GID:
                         print(f'Loaded scan #{ScanN}')
                     except Exception as e:
                         print(f"Error appending scan {ScanN}: {e}")
-        self._check_saving_dir()
+
         print("Loading completed. Reading time %3.3f sec" % (time.time() - t0))
 
     def get_qz(self, pixels):
@@ -244,7 +245,7 @@ class GID:
         Calculate the horizontal scattering vector qxy.
 
         Args:
-            angle (float or np.ndarray): In-plane scattering angle(s) in degrees.
+            angle (float or np.ndarray): In-plane scattering angle in degrees.
 
         Returns:
             float or np.ndarray: qxy value(s) in inverse Angstroms.
@@ -650,7 +651,7 @@ class GID:
         if limits:
             mask = (x >= limits[0]) & (x <= limits[1])
             x_fit = x[mask]
-            ax.plot(x_fit, result.best_fit, 'r-', label='Fit', linewidth=2)
+            ax.plot(x_fit, result.best_fit, 'r-', label='Fit', linewidth=3)
             ax.axvline(limits[0], color='k', linestyle='--', alpha=0.3)
             ax.axvline(limits[1], color='k', linestyle='--', alpha=0.3)
             fit_line = np.array([x_fit, result.best_fit])
@@ -661,7 +662,7 @@ class GID:
         ax.legend()
         ax.set_xlabel('q')
         ax.set_ylabel('Intensity')
-        ax.set_title(f'{model.capitalize()} Fit Analysis')
+        ax.set_title(f'{model.capitalize()} Peak Fit')
 
         if save:
             self._ensure_sample_dir()
